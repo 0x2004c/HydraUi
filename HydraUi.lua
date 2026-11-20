@@ -6,6 +6,7 @@ local userInputService = game:GetService("UserInputService")
 local tweenService = game:GetService("TweenService")
 local lightingService = game:GetService("Lighting")
 local httpService = game:GetService("HttpService")
+local runService = game:GetService("RunService")
 
 local localPlayer = playersService.LocalPlayer
 local rgb = Color3.fromRGB
@@ -43,6 +44,13 @@ local MAX_TOASTS = 5 -- the oldest slides out when a sixth arrives
 -- Minimized bar: top centre, below Roblox's topbar buttons row height.
 local LAUNCHER_SHOWN = UDim2.new(0.5, 0, 0, 12)
 local LAUNCHER_HIDDEN = UDim2.new(0.5, 0, 0, -70)
+-- Stats strip: under the minimized bar (46 tall), or in its place while the window is open.
+local STATS_MINIMIZED = UDim2.new(0.5, 0, 0, 64)
+local STATS_OPEN = UDim2.new(0.5, 0, 0, 12)
+local STATS_INTERVAL = 0.5 -- seconds between refreshes
+-- Value colours for stats that grade themselves (FPS, ping).
+local STAT_GOOD = rgb(105, 207, 161)
+local STAT_FAIR = rgb(255, 196, 92)
 local BLUR_SIZE = 12
 local AUTOSAVE_DELAY = 1 -- seconds after the last change before the auto save writes
 local FAST = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -914,6 +922,7 @@ function Library.createWindow(spec)
 	self.toastScale = UI.new("UIScale", {}, self.toasts)
 
 	self:buildLauncher(spec)
+	self:buildStats()
 
 	Library.connect(userInputService.InputBegan, function(input, processed)
 		self:onInput(input, processed)
@@ -1003,6 +1012,85 @@ function Window:buildLauncher(spec)
 	launcher.Activated:Connect(function()
 		self:setVisible(true)
 	end)
+end
+
+-- Always-on strip of live values at the top centre. Library.addStat adds more from a hub.
+function Window:buildStats()
+	local strip = UI.frame(self.gui, {
+		Name = "Stats",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = STATS_OPEN,
+		Size = UDim2.fromOffset(0, 26),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = Theme.window,
+		BackgroundTransparency = 0.08,
+		ZIndex = 40,
+	})
+	self.stats = strip
+	self.statRows = {}
+	UI.corner(strip, 8)
+	UI.stroke(strip, Theme.lineStrongTransparency)
+	UI.padding(strip, 10)
+	UI.list(strip, Enum.FillDirection.Horizontal, 12, Enum.VerticalAlignment.Center)
+
+	-- Frames counted between refreshes.
+	local frames = 0
+	Library.connect(runService.RenderStepped, function()
+		frames += 1
+	end)
+	local fps = 0
+	local startedAt = os.clock()
+	Library.addStat("FPS", function()
+		return tostring(fps), if fps >= 50 then STAT_GOOD elseif fps >= 30 then STAT_FAIR else Theme.danger
+	end)
+	Library.addStat("Ping", function()
+		local ping = math.round(localPlayer:GetNetworkPing() * 1000)
+		return `{ping}ms`, if ping <= 100 then STAT_GOOD elseif ping <= 200 then STAT_FAIR else Theme.danger
+	end)
+	Library.addStat("Players", function()
+		return `{#playersService:GetPlayers()}/{playersService.MaxPlayers}`
+	end)
+	Library.addStat("Time", function()
+		local seconds = math.floor(os.clock() - startedAt)
+		return string.format("%d:%02d:%02d", seconds // 3600, seconds // 60 % 60, seconds % 60)
+	end)
+
+	task.spawn(function()
+		local last = os.clock()
+		while not Library.unloaded do
+			task.wait(STATS_INTERVAL)
+			local now = os.clock()
+			fps = math.round(frames / (now - last))
+			frames, last = 0, now
+			self:refreshStats()
+		end
+	end)
+end
+
+-- name: the label; read() returns the value text and optionally its colour. Runs every STATS_INTERVAL.
+function Library.addStat(name, read)
+	local window = Library.window
+	local strip = window and window.stats
+	if not strip then
+		return
+	end
+	local row = UI.frame(strip, { Name = name, Size = UDim2.fromOffset(0, 26), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = #window.statRows + 1 })
+	UI.list(row, Enum.FillDirection.Horizontal, 5, Enum.VerticalAlignment.Center)
+	UI.text(row, string.upper(name), 10, Theme.dim, UI.semibold, { Size = UDim2.fromOffset(0, 26), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 1 })
+	local value = UI.text(row, "", 11, Theme.text, UI.bold, { Size = UDim2.fromOffset(0, 26), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 2 })
+	table.insert(window.statRows, { read = read, value = value })
+	window:refreshStats()
+end
+
+function Window:refreshStats()
+	if not self.stats.Visible then
+		return
+	end
+	for _, stat in self.statRows do
+		local ok, text, color = pcall(stat.read)
+		stat.value.Text = if ok then tostring(text) else "-"
+		stat.value.TextColor3 = if ok and color then color else Theme.text
+	end
 end
 
 function Window:iconButton(parent, name, order, callback, danger)
@@ -1274,6 +1362,7 @@ function Window:setVisible(visible)
 	self.root.Visible = visible
 	self:closePopover()
 	self:updateBlur()
+	UI.tween(self.stats, { Position = if visible then STATS_OPEN else STATS_MINIMIZED }, TweenInfo.new(0.32, Enum.EasingStyle.Quint, Enum.EasingDirection.Out))
 	if visible then
 		self.launcher.Visible = false
 		return
@@ -1742,6 +1831,10 @@ function Library.addSettingsTab(window, group)
 	end })
 	interface:addToggle("__blur", { title = "Background blur", description = "Blurs the game while the window is open.", default = false, callback = function()
 		window:updateBlur()
+	end })
+	interface:addToggle("__stats", { title = "Stats bar", description = "FPS, ping and more at the top of the screen.", default = true, callback = function(on)
+		window.stats.Visible = on
+		window:refreshStats()
 	end })
 
 	local profiles = tab:addSection("Profiles")
