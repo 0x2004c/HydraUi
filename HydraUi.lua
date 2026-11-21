@@ -874,12 +874,40 @@ function Tab:arrange(compact)
 	end
 end
 
--- spec: title, subtitle, logo (image content id, optional), menuKey (KeyCode name),
+-- The hub logo, downloaded once from this repository into HidraHub/logo.png and shown through
+-- getcustomasset (no Roblox upload needed). nil when the executor can't (Studio, no file functions).
+local LOGO_URL = "https://raw.githubusercontent.com/0x2004c/HydraUi/main/assets/logo.png"
+local LOGO_FILE = "HidraHub/logo.png"
+
+function Library.defaultLogo()
+	if not (Storage.files and typeof(getcustomasset) == "function") then
+		return nil
+	end
+	local ok, asset = pcall(function()
+		if not isfile(LOGO_FILE) then
+			if not isfolder("HidraHub") then
+				makefolder("HidraHub")
+			end
+			local data = game:HttpGet(LOGO_URL)
+			if #data < 100 or data:sub(2, 4) ~= "PNG" then
+				error("not a png")
+			end
+			writefile(LOGO_FILE, data)
+		end
+		return getcustomasset(LOGO_FILE)
+	end)
+	return if ok then asset else nil
+end
+
+-- spec: title, subtitle, logo (image content id, optional; default: the repository's logo), menuKey (KeyCode name),
 -- config (folder name under HidraHub/ for this hub's profiles and auto save, optional)
 function Library.createWindow(spec)
 	local guiParent = if typeof(gethui) == "function" then gethui() else localPlayer:WaitForChild("PlayerGui")
 	local self = setmetatable({ tabs = {}, groupHeaders = {}, visible = true, order = 0, toastCount = 0, toastList = {} }, Window)
 	Library.window = self
+	if spec.logo == nil then
+		spec.logo = Library.defaultLogo()
+	end
 	Library.flags.__menuKey = spec.menuKey or "RightShift"
 	if spec.config then
 		Library.folder = `HidraHub/{spec.config}`
